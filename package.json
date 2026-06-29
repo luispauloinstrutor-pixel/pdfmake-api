@@ -1,0 +1,17 @@
+{
+  "name": "ia-safety-pdfmake-api",
+  "version": "1.0.0",
+  "description": "API IA Safety para gerar PDFs de consulta de CA com pdfmake",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.3",
+    "pdfmake": "^0.2.20"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
