@@ -536,3 +536,256 @@ app.use((req, res) => {
 app.listen(PORT, () => {
   console.log(`IA Safety PDFMake API rodando na porta ${PORT}`);
 });
+
+app.post('/gerar-analise-imagem-pdf', validarToken, async (req, res) => {
+  try {
+    const {
+      nome,
+      telefone,
+      pergunta,
+      analise,
+      imagem_base64,
+      imagem_mime,
+      titulo,
+    } = req.body || {};
+
+    const agora = new Date();
+
+    const dataHora = new Intl.DateTimeFormat('pt-BR', {
+      timeZone: 'America/Sao_Paulo',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(agora).replace(',', ' às');
+
+    const tituloDoc = limpar(titulo, 'Relatório de Análise de Imagem');
+    const nomeUsuario = limpar(nome, 'Não informado');
+    const telefoneUsuario = limpar(telefone, 'Não informado');
+    const perguntaUsuario = limpar(pergunta, 'Não informada');
+    const analiseTexto = limpar(
+      analise,
+      'Não foi possível gerar a análise da imagem.'
+    );
+
+    let imagemDataUrl = null;
+
+    if (imagem_base64) {
+      const mime = limpar(imagem_mime, 'image/jpeg');
+      const base64Limpa = String(imagem_base64)
+        .replace(/^data:.*;base64,/, '')
+        .trim();
+
+      imagemDataUrl = `data:${mime};base64,${base64Limpa}`;
+    }
+
+    const blocosAnalise = analiseTexto
+      .split('\n')
+      .map((linha) => linha.trim())
+      .filter(Boolean)
+      .map((linha) => ({
+        text: linha,
+        style: 'textoCorrente',
+        margin: [0, 0, 0, 6],
+      }));
+
+    const content = [
+      {
+        text: tituloDoc,
+        style: 'tituloPrincipal',
+        margin: [0, 0, 0, 4],
+      },
+      {
+        text: 'IA Safety - Análise Técnica de Imagem',
+        style: 'subtitulo',
+        margin: [0, 0, 0, 18],
+      },
+
+      {
+        table: {
+          widths: [110, '*'],
+          body: [
+            [
+              { text: 'Usuário:', style: 'labelCampo', border: [false, false, false, false] },
+              { text: nomeUsuario, style: 'valorCampo', border: [false, false, false, false] }
+            ],
+            [
+              { text: 'Telefone:', style: 'labelCampo', border: [false, false, false, false] },
+              { text: telefoneUsuario, style: 'valorCampo', border: [false, false, false, false] }
+            ],
+            [
+              { text: 'Pergunta:', style: 'labelCampo', border: [false, false, false, false] },
+              { text: perguntaUsuario, style: 'valorCampo', border: [false, false, false, false] }
+            ],
+            [
+              { text: 'Gerado em:', style: 'labelCampo', border: [false, false, false, false] },
+              { text: dataHora, style: 'valorCampo', border: [false, false, false, false] }
+            ],
+          ],
+        },
+        layout: 'noBorders',
+        margin: [0, 0, 0, 18],
+      },
+    ];
+
+    if (imagemDataUrl) {
+      content.push(
+        {
+          text: 'IMAGEM ENVIADA',
+          style: 'secaoAzul',
+          margin: [0, 0, 0, 6],
+        },
+        {
+          canvas: [
+            {
+              type: 'line',
+              x1: 0,
+              y1: 0,
+              x2: 510,
+              y2: 0,
+              lineWidth: 1.2,
+              lineColor: '#0066cc',
+            },
+          ],
+          margin: [0, 0, 0, 10],
+        },
+        {
+          image: imagemDataUrl,
+          fit: [500, 320],
+          alignment: 'center',
+          margin: [0, 0, 0, 18],
+        }
+      );
+    }
+
+    content.push(
+      {
+        text: 'ANÁLISE TÉCNICA',
+        style: 'secaoVerde',
+        margin: [0, 0, 0, 6],
+      },
+      {
+        canvas: [
+          {
+            type: 'line',
+            x1: 0,
+            y1: 0,
+            x2: 510,
+            y2: 0,
+            lineWidth: 1.2,
+            lineColor: '#168a3a',
+          },
+        ],
+        margin: [0, 0, 0, 10],
+      },
+      ...blocosAnalise,
+      {
+        table: {
+          widths: ['*'],
+          body: [
+            [
+              {
+                text:
+                  'IMPORTANTE: Esta análise é preliminar e baseada na imagem enviada pelo usuário. A adoção de medidas deve ser validada por profissional habilitado e, quando aplicável, por inspeção no local.',
+                alignment: 'center',
+                fontSize: 8,
+                italics: true,
+                color: '#92400e',
+                fillColor: '#fff8e6',
+                margin: [12, 8, 12, 8],
+              },
+            ],
+          ],
+        },
+        layout: {
+          hLineWidth: () => 0.8,
+          vLineWidth: () => 0.8,
+          hLineColor: () => '#f2b84b',
+          vLineColor: () => '#f2b84b',
+        },
+        margin: [0, 18, 0, 8],
+      }
+    );
+
+    const docDefinition = {
+      pageSize: 'A4',
+      pageMargins: [42, 38, 42, 50],
+      footer: function (currentPage, pageCount) {
+        return {
+          margin: [42, 0, 42, 0],
+          columns: [
+            {
+              text: `Gerado em ${dataHora}`,
+              fontSize: 7,
+              color: '#8b95a1',
+              alignment: 'left',
+            },
+            {
+              text: `Página ${currentPage} de ${pageCount}`,
+              fontSize: 7,
+              color: '#8b95a1',
+              alignment: 'right',
+            },
+          ],
+        };
+      },
+      content,
+      styles: {
+        tituloPrincipal: {
+          fontSize: 16,
+          bold: true,
+          color: '#0f172a',
+        },
+        subtitulo: {
+          fontSize: 9,
+          color: '#64748b',
+        },
+        secaoAzul: {
+          fontSize: 10,
+          bold: true,
+          color: '#111827',
+        },
+        secaoVerde: {
+          fontSize: 10,
+          bold: true,
+          color: '#111827',
+        },
+        labelCampo: {
+          fontSize: 8,
+          bold: true,
+          color: '#374151',
+        },
+        valorCampo: {
+          fontSize: 8,
+          color: '#111827',
+        },
+        textoCorrente: {
+          fontSize: 9,
+          color: '#1f2937',
+          lineHeight: 1.3,
+          alignment: 'justify',
+        },
+      },
+      defaultStyle: {
+        font: 'Helvetica',
+      },
+    };
+
+    const pdfBuffer = await gerarPdfBuffer(docDefinition);
+
+    const fileName = `analise-imagem-${Date.now()}.pdf`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+
+    return res.send(pdfBuffer);
+  } catch (error) {
+    console.error('Erro ao gerar PDF da análise de imagem:', error);
+
+    return res.status(500).json({
+      error: 'Erro ao gerar PDF da análise de imagem',
+      details: error.message,
+    });
+  }
+});
