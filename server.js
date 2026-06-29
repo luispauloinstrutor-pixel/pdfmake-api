@@ -3,14 +3,14 @@ const PdfPrinter = require('pdfmake');
 
 const app = express();
 
-app.use(express.json({ limit: '20mb' }));
+app.use(express.json({ limit: '50mb' }));
 
 const PORT = process.env.PORT || 3000;
 const API_TOKEN = process.env.PDFMAKE_API_TOKEN || 'ia_safety_pdfmake_2026_seguro';
 
 /**
- * Usando fontes padrão do PDF.
- * Isso evita erro de Roboto/vfs_fonts dentro do container.
+ * Fontes padrão do PDF.
+ * Evita erro de Roboto/vfs_fonts dentro do container.
  */
 const fonts = {
   Helvetica: {
@@ -28,6 +28,18 @@ function limpar(valor, fallback = 'Não informado') {
 
   const texto = String(valor)
     .replace(/\s+/g, ' ')
+    .trim();
+
+  return texto.length ? texto : fallback;
+}
+
+function limparMultilinha(valor, fallback = 'Não informado') {
+  if (valor === null || valor === undefined) return fallback;
+
+  const texto = String(valor)
+    .replace(/\r\n/g, '\n')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
 
   return texto.length ? texto : fallback;
@@ -94,6 +106,19 @@ function validarToken(req, res, next) {
   next();
 }
 
+function dataHoraBrasil() {
+  const agora = new Date();
+
+  return new Intl.DateTimeFormat('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(agora).replace(',', ' às');
+}
+
 app.get('/', (req, res) => {
   res.json({
     ok: true,
@@ -101,6 +126,7 @@ app.get('/', (req, res) => {
     endpoints: {
       health: 'GET /health',
       gerarCaPdf: 'POST /gerar-ca-pdf',
+      gerarAnaliseImagemPdf: 'POST /gerar-analise-imagem-pdf',
     },
   });
 });
@@ -112,6 +138,9 @@ app.get('/health', (req, res) => {
   });
 });
 
+/**
+ * PDF DA CONSULTA DE CA
+ */
 app.post('/gerar-ca-pdf', validarToken, async (req, res) => {
   try {
     const {
@@ -128,27 +157,19 @@ app.post('/gerar-ca-pdf', validarToken, async (req, res) => {
       fonte_consulta,
     } = req.body || {};
 
-    const agora = new Date();
-
-    const dataHora = new Intl.DateTimeFormat('pt-BR', {
-      timeZone: 'America/Sao_Paulo',
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    }).format(agora).replace(',', ' às');
+    const dataHora = dataHoraBrasil();
 
     const numeroCa = limpar(ca, 'Não encontrado');
     const status = normalizarStatus(status_visual || situacao);
     const statusOriginal = limpar(situacao, status);
     const statusColor = corStatus(status);
 
-    const textoStatusComplementar = statusOriginal && statusOriginal !== status
-      ? statusOriginal
-      : status.includes('VENC')
-        ? 'Certificado vencido'
-        : 'Situação conforme consulta';
+    const textoStatusComplementar =
+      statusOriginal && statusOriginal !== status
+        ? statusOriginal
+        : status.includes('VENC')
+          ? 'Certificado vencido'
+          : 'Situação conforme consulta';
 
     const docDefinition = {
       pageSize: 'A4',
@@ -526,17 +547,9 @@ app.post('/gerar-ca-pdf', validarToken, async (req, res) => {
   }
 });
 
-app.use((req, res) => {
-  res.status(404).json({
-    error: 'Rota não encontrada',
-    path: req.path,
-  });
-});
-
-app.listen(PORT, () => {
-  console.log(`IA Safety PDFMake API rodando na porta ${PORT}`);
-});
-
+/**
+ * PDF DA ANÁLISE DE IMAGEM
+ */
 app.post('/gerar-analise-imagem-pdf', validarToken, async (req, res) => {
   try {
     const {
@@ -549,22 +562,13 @@ app.post('/gerar-analise-imagem-pdf', validarToken, async (req, res) => {
       titulo,
     } = req.body || {};
 
-    const agora = new Date();
-
-    const dataHora = new Intl.DateTimeFormat('pt-BR', {
-      timeZone: 'America/Sao_Paulo',
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    }).format(agora).replace(',', ' às');
+    const dataHora = dataHoraBrasil();
 
     const tituloDoc = limpar(titulo, 'Relatório de Análise de Imagem');
     const nomeUsuario = limpar(nome, 'Não informado');
     const telefoneUsuario = limpar(telefone, 'Não informado');
     const perguntaUsuario = limpar(pergunta, 'Não informada');
-    const analiseTexto = limpar(
+    const analiseTexto = limparMultilinha(
       analise,
       'Não foi possível gerar a análise da imagem.'
     );
@@ -607,20 +611,52 @@ app.post('/gerar-analise-imagem-pdf', validarToken, async (req, res) => {
           widths: [110, '*'],
           body: [
             [
-              { text: 'Usuário:', style: 'labelCampo', border: [false, false, false, false] },
-              { text: nomeUsuario, style: 'valorCampo', border: [false, false, false, false] }
+              {
+                text: 'Usuário:',
+                style: 'labelCampo',
+                border: [false, false, false, false],
+              },
+              {
+                text: nomeUsuario,
+                style: 'valorCampo',
+                border: [false, false, false, false],
+              },
             ],
             [
-              { text: 'Telefone:', style: 'labelCampo', border: [false, false, false, false] },
-              { text: telefoneUsuario, style: 'valorCampo', border: [false, false, false, false] }
+              {
+                text: 'Telefone:',
+                style: 'labelCampo',
+                border: [false, false, false, false],
+              },
+              {
+                text: telefoneUsuario,
+                style: 'valorCampo',
+                border: [false, false, false, false],
+              },
             ],
             [
-              { text: 'Pergunta:', style: 'labelCampo', border: [false, false, false, false] },
-              { text: perguntaUsuario, style: 'valorCampo', border: [false, false, false, false] }
+              {
+                text: 'Pergunta:',
+                style: 'labelCampo',
+                border: [false, false, false, false],
+              },
+              {
+                text: perguntaUsuario,
+                style: 'valorCampo',
+                border: [false, false, false, false],
+              },
             ],
             [
-              { text: 'Gerado em:', style: 'labelCampo', border: [false, false, false, false] },
-              { text: dataHora, style: 'valorCampo', border: [false, false, false, false] }
+              {
+                text: 'Gerado em:',
+                style: 'labelCampo',
+                border: [false, false, false, false],
+              },
+              {
+                text: dataHora,
+                style: 'valorCampo',
+                border: [false, false, false, false],
+              },
             ],
           ],
         },
@@ -711,6 +747,7 @@ app.post('/gerar-analise-imagem-pdf', validarToken, async (req, res) => {
     const docDefinition = {
       pageSize: 'A4',
       pageMargins: [42, 38, 42, 50],
+
       footer: function (currentPage, pageCount) {
         return {
           margin: [42, 0, 42, 0],
@@ -730,7 +767,9 @@ app.post('/gerar-analise-imagem-pdf', validarToken, async (req, res) => {
           ],
         };
       },
+
       content,
+
       styles: {
         tituloPrincipal: {
           fontSize: 16,
@@ -767,6 +806,7 @@ app.post('/gerar-analise-imagem-pdf', validarToken, async (req, res) => {
           alignment: 'justify',
         },
       },
+
       defaultStyle: {
         font: 'Helvetica',
       },
@@ -788,4 +828,21 @@ app.post('/gerar-analise-imagem-pdf', validarToken, async (req, res) => {
       details: error.message,
     });
   }
+});
+
+/**
+ * 404 precisa ficar depois de todas as rotas.
+ */
+app.use((req, res) => {
+  res.status(404).json({
+    error: 'Rota não encontrada',
+    path: req.path,
+  });
+});
+
+/**
+ * app.listen precisa ficar no final.
+ */
+app.listen(PORT, () => {
+  console.log(`IA Safety PDFMake API rodando na porta ${PORT}`);
 });
