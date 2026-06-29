@@ -1,21 +1,23 @@
 const express = require('express');
 const PdfPrinter = require('pdfmake');
-const path = require('path');
 
 const app = express();
 
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '20mb' }));
 
 const PORT = process.env.PORT || 3000;
 const API_TOKEN = process.env.PDFMAKE_API_TOKEN || 'ia_safety_pdfmake_2026_seguro';
 
-// Fontes do próprio pacote pdfmake
+/**
+ * Usando fontes padrão do PDF.
+ * Isso evita erro de Roboto/vfs_fonts dentro do container.
+ */
 const fonts = {
-  Roboto: {
-    normal: path.join(__dirname, 'node_modules/pdfmake/examples/fonts/Roboto-Regular.ttf'),
-    bold: path.join(__dirname, 'node_modules/pdfmake/examples/fonts/Roboto-Medium.ttf'),
-    italics: path.join(__dirname, 'node_modules/pdfmake/examples/fonts/Roboto-Italic.ttf'),
-    bolditalics: path.join(__dirname, 'node_modules/pdfmake/examples/fonts/Roboto-MediumItalic.ttf'),
+  Helvetica: {
+    normal: 'Helvetica',
+    bold: 'Helvetica-Bold',
+    italics: 'Helvetica-Oblique',
+    bolditalics: 'Helvetica-BoldOblique',
   },
 };
 
@@ -23,8 +25,44 @@ const printer = new PdfPrinter(fonts);
 
 function limpar(valor, fallback = 'Não informado') {
   if (valor === null || valor === undefined) return fallback;
-  const texto = String(valor).trim();
+
+  const texto = String(valor)
+    .replace(/\s+/g, ' ')
+    .trim();
+
   return texto.length ? texto : fallback;
+}
+
+function normalizarStatus(status) {
+  const texto = limpar(status, 'Não informado').toUpperCase();
+
+  if (texto.includes('VENC')) return 'VENCIDO';
+  if (texto.includes('VÁL') || texto.includes('VALID')) return 'VÁLIDO';
+  if (texto.includes('SUSP')) return 'SUSPENSO';
+  if (texto.includes('CANCEL')) return 'CANCELADO';
+
+  return texto;
+}
+
+function corStatus(status) {
+  const texto = normalizarStatus(status);
+
+  if (texto.includes('VENC')) return '#d92323';
+  if (texto.includes('VÁL') || texto.includes('VALID')) return '#168a3a';
+  if (texto.includes('SUSP')) return '#d97706';
+  if (texto.includes('CANCEL')) return '#d92323';
+
+  return '#d97706';
+}
+
+function nomeArquivoSeguro(valor) {
+  return limpar(valor, 'nao-encontrado')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9_-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
 }
 
 function gerarPdfBuffer(docDefinition) {
@@ -44,6 +82,29 @@ function gerarPdfBuffer(docDefinition) {
   });
 }
 
+function validarToken(req, res, next) {
+  const auth = req.headers.authorization || '';
+
+  if (auth !== `Bearer ${API_TOKEN}`) {
+    return res.status(401).json({
+      error: 'Não autorizado',
+    });
+  }
+
+  next();
+}
+
+app.get('/', (req, res) => {
+  res.json({
+    ok: true,
+    service: 'ia-safety-pdfmake-api',
+    endpoints: {
+      health: 'GET /health',
+      gerarCaPdf: 'POST /gerar-ca-pdf',
+    },
+  });
+});
+
 app.get('/health', (req, res) => {
   res.json({
     ok: true,
@@ -51,14 +112,8 @@ app.get('/health', (req, res) => {
   });
 });
 
-app.post('/gerar-ca-pdf', async (req, res) => {
+app.post('/gerar-ca-pdf', validarToken, async (req, res) => {
   try {
-    const auth = req.headers.authorization || '';
-
-    if (auth !== `Bearer ${API_TOKEN}`) {
-      return res.status(401).json({ error: 'Não autorizado' });
-    }
-
     const {
       ca,
       equipamento,
@@ -71,7 +126,7 @@ app.post('/gerar-ca-pdf', async (req, res) => {
       restricao,
       observacao,
       fonte_consulta,
-    } = req.body;
+    } = req.body || {};
 
     const agora = new Date();
 
@@ -84,15 +139,16 @@ app.post('/gerar-ca-pdf', async (req, res) => {
       minute: '2-digit',
     }).format(agora).replace(',', ' às');
 
-    const status = limpar(status_visual || situacao, 'Não informado').toUpperCase();
-
-    const statusColor = status.includes('VENC')
-      ? '#d92323'
-      : status.includes('VÁL') || status.includes('VALID')
-        ? '#178f42'
-        : '#d97706';
-
     const numeroCa = limpar(ca, 'Não encontrado');
+    const status = normalizarStatus(status_visual || situacao);
+    const statusOriginal = limpar(situacao, status);
+    const statusColor = corStatus(status);
+
+    const textoStatusComplementar = statusOriginal && statusOriginal !== status
+      ? statusOriginal
+      : status.includes('VENC')
+        ? 'Certificado vencido'
+        : 'Situação conforme consulta';
 
     const docDefinition = {
       pageSize: 'A4',
@@ -124,8 +180,14 @@ app.post('/gerar-ca-pdf', async (req, res) => {
             {
               width: '*',
               stack: [
-                { text: 'Certificado de Aprovação', style: 'tituloPrincipal' },
-                { text: 'Ministério do Trabalho e Emprego', style: 'subtitulo' },
+                {
+                  text: 'Certificado de Aprovação',
+                  style: 'tituloPrincipal',
+                },
+                {
+                  text: 'Ministério do Trabalho e Emprego',
+                  style: 'subtitulo',
+                },
               ],
             },
             {
@@ -144,10 +206,17 @@ app.post('/gerar-ca-pdf', async (req, res) => {
               [
                 {
                   stack: [
-                    { text: 'STATUS DO CERTIFICADO', style: 'labelBox' },
-                    { text: status, style: 'statusCertificado', color: statusColor },
                     {
-                      text: status.includes('VENC') ? 'Certificado vencido' : 'Situação conforme consulta',
+                      text: 'STATUS DO CERTIFICADO',
+                      style: 'labelBox',
+                    },
+                    {
+                      text: status,
+                      style: 'statusCertificado',
+                      color: statusColor,
+                    },
+                    {
+                      text: textoStatusComplementar,
                       fontSize: 8,
                       italics: true,
                       color: '#777777',
@@ -160,8 +229,14 @@ app.post('/gerar-ca-pdf', async (req, res) => {
                 },
                 {
                   stack: [
-                    { text: 'VALIDADE', style: 'labelBox' },
-                    { text: limpar(validade), style: 'validade' },
+                    {
+                      text: 'VALIDADE',
+                      style: 'labelBox',
+                    },
+                    {
+                      text: limpar(validade),
+                      style: 'validade',
+                    },
                   ],
                   fillColor: '#f6f7f9',
                   border: [false, false, false, false],
@@ -180,43 +255,139 @@ app.post('/gerar-ca-pdf', async (req, res) => {
           margin: [0, 0, 0, 20],
         },
 
-        { text: 'INFORMAÇÕES DO FABRICANTE', style: 'secaoAzul' },
         {
-          columns: [
-            { width: 90, text: 'Fabricante:', style: 'labelCampo' },
-            { width: '*', text: limpar(fabricante).toUpperCase(), style: 'valorCampo' },
+          text: 'INFORMAÇÕES DO FABRICANTE',
+          style: 'secaoAzul',
+          margin: [0, 0, 0, 6],
+        },
+        {
+          canvas: [
+            {
+              type: 'line',
+              x1: 0,
+              y1: 0,
+              x2: 510,
+              y2: 0,
+              lineWidth: 1.2,
+              lineColor: '#0066cc',
+            },
           ],
-          margin: [0, 8, 0, 18],
-        },
-
-        { text: 'DESCRIÇÃO DO EQUIPAMENTO', style: 'secaoAzul' },
-        {
-          text: limpar(descricao),
-          style: 'textoCorrente',
-          margin: [0, 8, 0, 18],
-        },
-
-        { text: 'APROVAÇÃO E PROTEÇÃO', style: 'secaoVerde' },
-        {
-          columns: [
-            { width: 90, text: 'Aprovado para:', style: 'labelCampo' },
-            { width: '*', text: limpar(aprovado).toUpperCase(), style: 'valorCampo' },
-          ],
-          margin: [0, 8, 0, 10],
+          margin: [0, 0, 0, 8],
         },
         {
           columns: [
-            { width: 90, text: 'Restrições:', style: 'labelCampo' },
-            { width: '*', text: limpar(restricao, 'Nenhuma'), style: 'valorCampo' },
+            {
+              width: 90,
+              text: 'Fabricante:',
+              style: 'labelCampo',
+            },
+            {
+              width: '*',
+              text: limpar(fabricante).toUpperCase(),
+              style: 'valorCampo',
+            },
           ],
           margin: [0, 0, 0, 18],
         },
 
-        { text: 'OBSERVAÇÕES TÉCNICAS', style: 'secaoCinza' },
+        {
+          text: 'DESCRIÇÃO DO EQUIPAMENTO',
+          style: 'secaoAzul',
+          margin: [0, 0, 0, 6],
+        },
+        {
+          canvas: [
+            {
+              type: 'line',
+              x1: 0,
+              y1: 0,
+              x2: 510,
+              y2: 0,
+              lineWidth: 1.2,
+              lineColor: '#0066cc',
+            },
+          ],
+          margin: [0, 0, 0, 8],
+        },
+        {
+          text: limpar(descricao),
+          style: 'textoCorrente',
+          margin: [0, 0, 0, 18],
+        },
+
+        {
+          text: 'APROVAÇÃO E PROTEÇÃO',
+          style: 'secaoVerde',
+          margin: [0, 0, 0, 6],
+        },
+        {
+          canvas: [
+            {
+              type: 'line',
+              x1: 0,
+              y1: 0,
+              x2: 510,
+              y2: 0,
+              lineWidth: 1.2,
+              lineColor: '#168a3a',
+            },
+          ],
+          margin: [0, 0, 0, 8],
+        },
+        {
+          columns: [
+            {
+              width: 90,
+              text: 'Aprovado para:',
+              style: 'labelCampo',
+            },
+            {
+              width: '*',
+              text: limpar(aprovado).toUpperCase(),
+              style: 'valorCampo',
+            },
+          ],
+          margin: [0, 0, 0, 10],
+        },
+        {
+          columns: [
+            {
+              width: 90,
+              text: 'Restrições:',
+              style: 'labelCampo',
+            },
+            {
+              width: '*',
+              text: limpar(restricao, 'Nenhuma'),
+              style: 'valorCampo',
+            },
+          ],
+          margin: [0, 0, 0, 18],
+        },
+
+        {
+          text: 'OBSERVAÇÕES TÉCNICAS',
+          style: 'secaoCinza',
+          margin: [0, 0, 0, 6],
+        },
+        {
+          canvas: [
+            {
+              type: 'line',
+              x1: 0,
+              y1: 0,
+              x2: 510,
+              y2: 0,
+              lineWidth: 1.2,
+              lineColor: '#6b7280',
+            },
+          ],
+          margin: [0, 0, 0, 8],
+        },
         {
           text: limpar(observacao, 'Nenhuma observação técnica informada.'),
           style: 'textoObservacao',
-          margin: [0, 8, 0, 28],
+          margin: [0, 0, 0, 28],
         },
 
         {
@@ -232,11 +403,16 @@ app.post('/gerar-ca-pdf', async (req, res) => {
                   italics: true,
                   color: '#92400e',
                   fillColor: '#fff8e6',
-                  borderColor: ['#f2b84b', '#f2b84b', '#f2b84b', '#f2b84b'],
                   margin: [12, 8, 12, 8],
                 },
               ],
             ],
+          },
+          layout: {
+            hLineWidth: () => 0.8,
+            vLineWidth: () => 0.8,
+            hLineColor: () => '#f2b84b',
+            vLineColor: () => '#f2b84b',
           },
           margin: [0, 0, 0, 8],
         },
@@ -247,35 +423,97 @@ app.post('/gerar-ca-pdf', async (req, res) => {
           fontSize: 7,
           color: '#8b95a1',
           italics: true,
+          margin: [0, 4, 0, 0],
         },
       ],
 
       styles: {
-        tituloPrincipal: { fontSize: 16, bold: true, color: '#0f172a' },
-        subtitulo: { fontSize: 8, color: '#64748b', margin: [0, 2, 0, 0] },
-        numeroCa: { fontSize: 16, bold: true, color: '#0066cc', alignment: 'right' },
-        labelBox: { fontSize: 7, bold: true, color: '#6b7280', margin: [0, 0, 0, 4] },
-        statusCertificado: { fontSize: 15, bold: true },
-        validade: { fontSize: 12, bold: true, color: '#111827' },
-        equipamento: { fontSize: 15, bold: true, color: '#111827', alignment: 'center' },
-        secaoAzul: { fontSize: 10, bold: true, color: '#111827', decoration: 'underline', decorationColor: '#0066cc' },
-        secaoVerde: { fontSize: 10, bold: true, color: '#111827', decoration: 'underline', decorationColor: '#168a3a' },
-        secaoCinza: { fontSize: 10, bold: true, color: '#111827', decoration: 'underline', decorationColor: '#6b7280' },
-        labelCampo: { fontSize: 8, bold: true, color: '#374151' },
-        valorCampo: { fontSize: 8, color: '#111827' },
-        textoCorrente: { fontSize: 9, color: '#1f2937', lineHeight: 1.35, alignment: 'justify' },
-        textoObservacao: { fontSize: 8, color: '#1f2937', lineHeight: 1.3, alignment: 'justify' },
+        tituloPrincipal: {
+          fontSize: 16,
+          bold: true,
+          color: '#0f172a',
+        },
+        subtitulo: {
+          fontSize: 8,
+          color: '#64748b',
+          margin: [0, 2, 0, 0],
+        },
+        numeroCa: {
+          fontSize: 16,
+          bold: true,
+          color: '#0066cc',
+          alignment: 'right',
+        },
+        labelBox: {
+          fontSize: 7,
+          bold: true,
+          color: '#6b7280',
+          margin: [0, 0, 0, 4],
+        },
+        statusCertificado: {
+          fontSize: 15,
+          bold: true,
+        },
+        validade: {
+          fontSize: 12,
+          bold: true,
+          color: '#111827',
+        },
+        equipamento: {
+          fontSize: 15,
+          bold: true,
+          color: '#111827',
+          alignment: 'center',
+        },
+        secaoAzul: {
+          fontSize: 10,
+          bold: true,
+          color: '#111827',
+        },
+        secaoVerde: {
+          fontSize: 10,
+          bold: true,
+          color: '#111827',
+        },
+        secaoCinza: {
+          fontSize: 10,
+          bold: true,
+          color: '#111827',
+        },
+        labelCampo: {
+          fontSize: 8,
+          bold: true,
+          color: '#374151',
+        },
+        valorCampo: {
+          fontSize: 8,
+          color: '#111827',
+        },
+        textoCorrente: {
+          fontSize: 9,
+          color: '#1f2937',
+          lineHeight: 1.35,
+          alignment: 'justify',
+        },
+        textoObservacao: {
+          fontSize: 8,
+          color: '#1f2937',
+          lineHeight: 1.3,
+          alignment: 'justify',
+        },
       },
 
       defaultStyle: {
-        font: 'Roboto',
+        font: 'Helvetica',
       },
     };
 
     const pdfBuffer = await gerarPdfBuffer(docDefinition);
 
+    const fileName = `consulta-ca-${nomeArquivoSeguro(numeroCa)}.pdf`;
+
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="consulta-ca-${numeroCa}.pdf"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
 
     return res.send(pdfBuffer);
   } catch (error) {
@@ -286,6 +524,13 @@ app.post('/gerar-ca-pdf', async (req, res) => {
       details: error.message,
     });
   }
+});
+
+app.use((req, res) => {
+  res.status(404).json({
+    error: 'Rota não encontrada',
+    path: req.path,
+  });
 });
 
 app.listen(PORT, () => {
