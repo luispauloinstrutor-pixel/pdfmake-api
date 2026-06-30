@@ -2,17 +2,11 @@ const express = require('express');
 const PdfPrinter = require('pdfmake');
 
 const app = express();
-
-// Aumentado para aceitar PDF com várias imagens em base64
 app.use(express.json({ limit: '100mb' }));
 
 const PORT = process.env.PORT || 3000;
 const API_TOKEN = process.env.PDFMAKE_API_TOKEN || 'ia_safety_pdfmake_2026_seguro';
 
-/**
- * Fontes padrão do PDF.
- * Evita erro de Roboto/vfs_fonts dentro do container.
- */
 const fonts = {
   Helvetica: {
     normal: 'Helvetica',
@@ -26,24 +20,28 @@ const printer = new PdfPrinter(fonts);
 
 function limpar(valor, fallback = 'Não informado') {
   if (valor === null || valor === undefined) return fallback;
-
-  const texto = String(valor)
-    .replace(/\s+/g, ' ')
-    .trim();
-
+  const texto = String(valor).replace(/\s+/g, ' ').trim();
   return texto.length ? texto : fallback;
 }
 
 function limparMultilinha(valor, fallback = 'Não informado') {
   if (valor === null || valor === undefined) return fallback;
-
   const texto = String(valor)
     .replace(/\r\n/g, '\n')
     .replace(/[ \t]+/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
-
   return texto.length ? texto : fallback;
+}
+
+function nomeArquivoSeguro(valor) {
+  return limpar(valor, 'arquivo')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9_-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
 }
 
 function normalizarStatus(status) {
@@ -68,33 +66,6 @@ function corStatus(status) {
   return '#d97706';
 }
 
-function nomeArquivoSeguro(valor) {
-  return limpar(valor, 'nao-encontrado')
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9_-]/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '');
-}
-
-function gerarPdfBuffer(docDefinition) {
-  return new Promise((resolve, reject) => {
-    try {
-      const pdfDoc = printer.createPdfKitDocument(docDefinition);
-      const chunks = [];
-
-      pdfDoc.on('data', chunk => chunks.push(chunk));
-      pdfDoc.on('end', () => resolve(Buffer.concat(chunks)));
-      pdfDoc.on('error', reject);
-
-      pdfDoc.end();
-    } catch (error) {
-      reject(error);
-    }
-  });
-}
-
 function validarToken(req, res, next) {
   const auth = req.headers.authorization || '';
 
@@ -108,8 +79,6 @@ function validarToken(req, res, next) {
 }
 
 function dataHoraBrasil() {
-  const agora = new Date();
-
   return new Intl.DateTimeFormat('pt-BR', {
     timeZone: 'America/Sao_Paulo',
     day: '2-digit',
@@ -117,7 +86,7 @@ function dataHoraBrasil() {
     year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
-  }).format(agora).replace(',', ' às');
+  }).format(new Date()).replace(',', ' às');
 }
 
 function base64ParaDataUrl(base64, mime = 'image/jpeg') {
@@ -130,18 +99,6 @@ function base64ParaDataUrl(base64, mime = 'image/jpeg') {
   if (texto.startsWith('data:')) return texto;
 
   return `data:${limpar(mime, 'image/jpeg')};base64,${texto.replace(/^data:.*;base64,/, '').trim()}`;
-}
-
-function montarBlocosTexto(texto, estilo = 'textoCorrente') {
-  return limparMultilinha(texto, 'Não informado')
-    .split('\n')
-    .map(linha => linha.trim())
-    .filter(Boolean)
-    .map(linha => ({
-      text: linha,
-      style: estilo,
-      margin: [0, 0, 0, 6],
-    }));
 }
 
 function estilosPadrao() {
@@ -239,6 +196,18 @@ function linhaSecao(cor = '#0066cc') {
   };
 }
 
+function montarBlocosTexto(texto, estilo = 'textoCorrente') {
+  return limparMultilinha(texto, 'Não informado')
+    .split('\n')
+    .map(linha => linha.trim())
+    .filter(Boolean)
+    .map(linha => ({
+      text: linha,
+      style: estilo,
+      margin: [0, 0, 0, 6],
+    }));
+}
+
 function avisoImportante(texto) {
   return {
     table: {
@@ -298,6 +267,119 @@ function docBase(content, dataHora) {
   };
 }
 
+function gerarPdfBuffer(docDefinition) {
+  return new Promise((resolve, reject) => {
+    try {
+      const pdfDoc = printer.createPdfKitDocument(docDefinition);
+      const chunks = [];
+
+      pdfDoc.on('data', chunk => chunks.push(chunk));
+      pdfDoc.on('end', () => resolve(Buffer.concat(chunks)));
+      pdfDoc.on('error', reject);
+
+      pdfDoc.end();
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+function normalizarTextoAnalise(texto) {
+  return limparMultilinha(texto, '')
+    .replace(/\*\*/g, '')
+    .replace(/\r\n/g, '\n')
+    .trim();
+}
+
+function regexMarcadorImagem(numero) {
+  return new RegExp(
+    `(^|\\n)\\s*(?:#{1,6}\\s*)?(?:IMAGEM|FOTO)\\s*0*${numero}\\b\\s*[:\\-–—.]?`,
+    'i'
+  );
+}
+
+function extrairAnaliseDaImagem(analise, numeroImagem) {
+  const texto = normalizarTextoAnalise(analise);
+  if (!texto) return '';
+
+  const marcadorAtual = regexMarcadorImagem(numeroImagem);
+  const matchAtual = marcadorAtual.exec(texto);
+
+  if (!matchAtual) return '';
+
+  const inicioConteudo = matchAtual.index + matchAtual[0].length;
+  const resto = texto.slice(inicioConteudo);
+  const candidatosFim = [];
+
+  const proximaImagem = /\n\s*(?:#{1,6}\s*)?(?:IMAGEM|FOTO)\s*\d+\b\s*[:\-–—.]?/gi;
+  const matchProxima = proximaImagem.exec(resto);
+
+  if (matchProxima) candidatosFim.push(matchProxima.index);
+
+  const headingsFinais = [
+    /\n\s*CONSIDERAÇÕES\s+GERAIS\b/i,
+    /\n\s*RECOMENDAÇÕES\s+GERAIS\b/i,
+    /\n\s*CONSIDERAÇÕES\s+GERAIS\s+E\s+RECOMENDAÇÕES\b/i,
+    /\n\s*CONCLUSÃO\b/i,
+    /\n\s*OBSERVAÇÕES\s+FINAIS\b/i,
+    /\n\s*IMPORTANTE\b/i,
+  ];
+
+  for (const re of headingsFinais) {
+    const m = re.exec(resto);
+    if (m) candidatosFim.push(m.index);
+  }
+
+  const fim = candidatosFim.length ? Math.min(...candidatosFim) : resto.length;
+
+  return resto
+    .slice(0, fim)
+    .replace(/^\s*[:\-–—.]\s*/, '')
+    .trim();
+}
+
+function extrairIntroducao(analise) {
+  const texto = normalizarTextoAnalise(analise);
+  if (!texto) return '';
+
+  const primeiraImagem = /(^|\n)\s*(?:#{1,6}\s*)?(?:IMAGEM|FOTO)\s*\d+\b\s*[:\-–—.]?/i.exec(texto);
+  const antesDasImagens = primeiraImagem ? texto.slice(0, primeiraImagem.index).trim() : '';
+
+  if (!antesDasImagens) return '';
+
+  return antesDasImagens
+    .split('\n')
+    .map(l => l.trim())
+    .filter(l => l && !/^ANÁLISE\s+DAS\s+IMAGENS$/i.test(l))
+    .join('\n')
+    .trim();
+}
+
+function extrairConsideracoesGerais(analise) {
+  const texto = normalizarTextoAnalise(analise);
+  if (!texto) return '';
+
+  const linhas = texto.split('\n');
+
+  const indice = linhas.findIndex(linha =>
+    /^(CONSIDERAÇÕES\s+GERAIS(?:\s+E\s+RECOMENDAÇÕES)?|RECOMENDAÇÕES\s+GERAIS|CONCLUSÃO|OBSERVAÇÕES\s+FINAIS)\b/i.test(linha.trim())
+  );
+
+  if (indice === -1) return '';
+
+  return linhas
+    .slice(indice + 1)
+    .join('\n')
+    .replace(/\n\s*IMPORTANTE\b[\s\S]*$/i, '')
+    .trim();
+}
+
+function enviarPdf(res, pdfBuffer, fileName) {
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+  return res.send(pdfBuffer);
+}
+
 app.get('/', (req, res) => {
   res.json({
     ok: true,
@@ -318,9 +400,6 @@ app.get('/health', (req, res) => {
   });
 });
 
-/**
- * PDF DA CONSULTA DE CA
- */
 app.post('/gerar-ca-pdf', validarToken, async (req, res) => {
   try {
     const {
@@ -375,7 +454,6 @@ app.post('/gerar-ca-pdf', validarToken, async (req, res) => {
         ],
         margin: [0, 0, 0, 22],
       },
-
       {
         table: {
           widths: ['*', '*'],
@@ -425,13 +503,11 @@ app.post('/gerar-ca-pdf', validarToken, async (req, res) => {
         layout: 'noBorders',
         margin: [0, 0, 0, 22],
       },
-
       {
         text: limpar(equipamento).toUpperCase(),
         style: 'equipamento',
         margin: [0, 0, 0, 20],
       },
-
       {
         text: 'INFORMAÇÕES DO FABRICANTE',
         style: 'secaoAzul',
@@ -453,7 +529,6 @@ app.post('/gerar-ca-pdf', validarToken, async (req, res) => {
         ],
         margin: [0, 0, 0, 18],
       },
-
       {
         text: 'DESCRIÇÃO DO EQUIPAMENTO',
         style: 'secaoAzul',
@@ -465,7 +540,6 @@ app.post('/gerar-ca-pdf', validarToken, async (req, res) => {
         style: 'textoCorrente',
         margin: [0, 0, 0, 18],
       },
-
       {
         text: 'APROVAÇÃO E PROTEÇÃO',
         style: 'secaoVerde',
@@ -502,7 +576,6 @@ app.post('/gerar-ca-pdf', validarToken, async (req, res) => {
         ],
         margin: [0, 0, 0, 18],
       },
-
       {
         text: 'OBSERVAÇÕES TÉCNICAS',
         style: 'secaoCinza',
@@ -514,11 +587,9 @@ app.post('/gerar-ca-pdf', validarToken, async (req, res) => {
         style: 'textoObservacao',
         margin: [0, 0, 0, 10],
       },
-
       avisoImportante(
         'IMPORTANTE: Este documento é uma consulta ao sistema de Certificados de Aprovação. Para validação oficial, consulte sempre o portal do Ministério do Trabalho e Emprego.'
       ),
-
       {
         text: `Fonte auxiliar da consulta: ${limpar(fonte_consulta, 'meuca.com.br')}`,
         alignment: 'center',
@@ -531,12 +602,11 @@ app.post('/gerar-ca-pdf', validarToken, async (req, res) => {
 
     const pdfBuffer = await gerarPdfBuffer(docBase(content, dataHora));
 
-    const fileName = `consulta-ca-${nomeArquivoSeguro(numeroCa)}.pdf`;
-
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-
-    return res.send(pdfBuffer);
+    return enviarPdf(
+      res,
+      pdfBuffer,
+      `consulta-ca-${nomeArquivoSeguro(numeroCa)}.pdf`
+    );
   } catch (error) {
     console.error('Erro ao gerar PDF do CA:', error);
 
@@ -547,10 +617,6 @@ app.post('/gerar-ca-pdf', validarToken, async (req, res) => {
   }
 });
 
-/**
- * PDF DA ANÁLISE DE UMA IMAGEM
- * Mantido para compatibilidade com fluxos antigos.
- */
 app.post('/gerar-analise-imagem-pdf', validarToken, async (req, res) => {
   try {
     const {
@@ -569,12 +635,16 @@ app.post('/gerar-analise-imagem-pdf', validarToken, async (req, res) => {
     const nomeUsuario = limpar(nome, 'Não informado');
     const telefoneUsuario = limpar(telefone, 'Não informado');
     const perguntaUsuario = limpar(pergunta, 'Não informada');
+
     const analiseTexto = limparMultilinha(
       analise,
       'Não foi possível gerar a análise da imagem.'
     );
 
-    const imagemDataUrl = base64ParaDataUrl(imagem_base64, imagem_mime || 'image/jpeg');
+    const imagemDataUrl = base64ParaDataUrl(
+      imagem_base64,
+      imagem_mime || 'image/jpeg'
+    );
 
     const content = [
       {
@@ -592,20 +662,52 @@ app.post('/gerar-analise-imagem-pdf', validarToken, async (req, res) => {
           widths: [110, '*'],
           body: [
             [
-              { text: 'Usuário:', style: 'labelCampo', border: [false, false, false, false] },
-              { text: nomeUsuario, style: 'valorCampo', border: [false, false, false, false] },
+              {
+                text: 'Usuário:',
+                style: 'labelCampo',
+                border: [false, false, false, false],
+              },
+              {
+                text: nomeUsuario,
+                style: 'valorCampo',
+                border: [false, false, false, false],
+              },
             ],
             [
-              { text: 'Telefone:', style: 'labelCampo', border: [false, false, false, false] },
-              { text: telefoneUsuario, style: 'valorCampo', border: [false, false, false, false] },
+              {
+                text: 'Telefone:',
+                style: 'labelCampo',
+                border: [false, false, false, false],
+              },
+              {
+                text: telefoneUsuario,
+                style: 'valorCampo',
+                border: [false, false, false, false],
+              },
             ],
             [
-              { text: 'Pergunta:', style: 'labelCampo', border: [false, false, false, false] },
-              { text: perguntaUsuario, style: 'valorCampo', border: [false, false, false, false] },
+              {
+                text: 'Pergunta:',
+                style: 'labelCampo',
+                border: [false, false, false, false],
+              },
+              {
+                text: perguntaUsuario,
+                style: 'valorCampo',
+                border: [false, false, false, false],
+              },
             ],
             [
-              { text: 'Gerado em:', style: 'labelCampo', border: [false, false, false, false] },
-              { text: dataHora, style: 'valorCampo', border: [false, false, false, false] },
+              {
+                text: 'Gerado em:',
+                style: 'labelCampo',
+                border: [false, false, false, false],
+              },
+              {
+                text: dataHora,
+                style: 'valorCampo',
+                border: [false, false, false, false],
+              },
             ],
           ],
         },
@@ -646,12 +748,7 @@ app.post('/gerar-analise-imagem-pdf', validarToken, async (req, res) => {
 
     const pdfBuffer = await gerarPdfBuffer(docBase(content, dataHora));
 
-    const fileName = `analise-imagem-${Date.now()}.pdf`;
-
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-
-    return res.send(pdfBuffer);
+    return enviarPdf(res, pdfBuffer, `analise-imagem-${Date.now()}.pdf`);
   } catch (error) {
     console.error('Erro ao gerar PDF da análise de imagem:', error);
 
@@ -662,11 +759,6 @@ app.post('/gerar-analise-imagem-pdf', validarToken, async (req, res) => {
   }
 });
 
-/**
- * PDF DA ANÁLISE DE VÁRIAS IMAGENS
- * Endpoint usado pelo fluxo V3 com Redis + Wait.
- * Rota: POST /gerar-analise-imagens-pdf
- */
 app.post('/gerar-analise-imagens-pdf', validarToken, async (req, res) => {
   try {
     const {
@@ -686,6 +778,7 @@ app.post('/gerar-analise-imagens-pdf', validarToken, async (req, res) => {
     const nomeUsuario = limpar(nome, 'Não informado');
     const telefoneUsuario = limpar(telefone, 'Não informado');
     const perguntaUsuario = limpar(pergunta, 'Não informada');
+
     const analiseTexto = limparMultilinha(
       analise,
       'Não foi possível gerar a análise das imagens.'
@@ -693,7 +786,6 @@ app.post('/gerar-analise-imagens-pdf', validarToken, async (req, res) => {
 
     let listaImagens = Array.isArray(imagens) ? imagens : [];
 
-    // Compatibilidade: se vier uma imagem simples, transforma em lista.
     if (!listaImagens.length && imagem_base64) {
       listaImagens = [
         {
@@ -705,8 +797,15 @@ app.post('/gerar-analise-imagens-pdf', validarToken, async (req, res) => {
       ];
     }
 
-    // Limite de segurança para evitar PDF enorme e estouro de payload.
     listaImagens = listaImagens.slice(0, 5);
+
+    const analisesPorImagem = listaImagens.map((_, index) =>
+      extrairAnaliseDaImagem(analiseTexto, index + 1)
+    );
+
+    const temAnaliseSeparada = analisesPorImagem.some(Boolean);
+    const introducao = extrairIntroducao(analiseTexto);
+    const consideracoesGerais = extrairConsideracoesGerais(analiseTexto);
 
     const content = [
       {
@@ -724,24 +823,64 @@ app.post('/gerar-analise-imagens-pdf', validarToken, async (req, res) => {
           widths: [130, '*'],
           body: [
             [
-              { text: 'Usuário:', style: 'labelCampo', border: [false, false, false, false] },
-              { text: nomeUsuario, style: 'valorCampo', border: [false, false, false, false] },
+              {
+                text: 'Usuário:',
+                style: 'labelCampo',
+                border: [false, false, false, false],
+              },
+              {
+                text: nomeUsuario,
+                style: 'valorCampo',
+                border: [false, false, false, false],
+              },
             ],
             [
-              { text: 'Telefone:', style: 'labelCampo', border: [false, false, false, false] },
-              { text: telefoneUsuario, style: 'valorCampo', border: [false, false, false, false] },
+              {
+                text: 'Telefone:',
+                style: 'labelCampo',
+                border: [false, false, false, false],
+              },
+              {
+                text: telefoneUsuario,
+                style: 'valorCampo',
+                border: [false, false, false, false],
+              },
             ],
             [
-              { text: 'Quantidade de imagens:', style: 'labelCampo', border: [false, false, false, false] },
-              { text: String(listaImagens.length), style: 'valorCampo', border: [false, false, false, false] },
+              {
+                text: 'Quantidade de imagens:',
+                style: 'labelCampo',
+                border: [false, false, false, false],
+              },
+              {
+                text: String(listaImagens.length),
+                style: 'valorCampo',
+                border: [false, false, false, false],
+              },
             ],
             [
-              { text: 'Solicitação:', style: 'labelCampo', border: [false, false, false, false] },
-              { text: perguntaUsuario, style: 'valorCampo', border: [false, false, false, false] },
+              {
+                text: 'Solicitação:',
+                style: 'labelCampo',
+                border: [false, false, false, false],
+              },
+              {
+                text: perguntaUsuario,
+                style: 'valorCampo',
+                border: [false, false, false, false],
+              },
             ],
             [
-              { text: 'Gerado em:', style: 'labelCampo', border: [false, false, false, false] },
-              { text: dataHora, style: 'valorCampo', border: [false, false, false, false] },
+              {
+                text: 'Gerado em:',
+                style: 'labelCampo',
+                border: [false, false, false, false],
+              },
+              {
+                text: dataHora,
+                style: 'valorCampo',
+                border: [false, false, false, false],
+              },
             ],
           ],
         },
@@ -750,75 +889,136 @@ app.post('/gerar-analise-imagens-pdf', validarToken, async (req, res) => {
       },
     ];
 
+    if (introducao && temAnaliseSeparada) {
+      content.push(
+        {
+          text: 'INTRODUÇÃO',
+          style: 'secaoCinza',
+          margin: [0, 0, 0, 6],
+        },
+        linhaSecao('#6b7280'),
+        ...montarBlocosTexto(introducao)
+      );
+    }
+
     if (listaImagens.length) {
       content.push(
         {
-          text: 'IMAGENS ENVIADAS',
+          text: 'IMAGENS E ANÁLISES TÉCNICAS',
           style: 'secaoAzul',
-          margin: [0, 0, 0, 6],
+          margin: [0, 6, 0, 6],
         },
         linhaSecao('#0066cc')
       );
 
       listaImagens.forEach((img, index) => {
-        const base64 = img.base64 || img.imagem_base64 || img.data || img.media || '';
-        const mime = img.mime || img.mimeType || img.imagem_mime || 'image/jpeg';
-        const fileName = limpar(img.fileName || img.filename || `imagem-${index + 1}.jpg`, `imagem-${index + 1}.jpg`);
+        const numero = index + 1;
+
+        const base64 =
+          img.base64 ||
+          img.imagem_base64 ||
+          img.data ||
+          img.media ||
+          '';
+
+        const mime =
+          img.mime ||
+          img.mimeType ||
+          img.imagem_mime ||
+          'image/jpeg';
+
+        const fileName = limpar(
+          img.fileName || img.filename || `imagem-${numero}.jpg`,
+          `imagem-${numero}.jpg`
+        );
+
         const dataUrl = base64ParaDataUrl(base64, mime);
+        const analiseImagem = analisesPorImagem[index];
+
+        content.push(
+          {
+            text: `IMAGEM ${numero} - ${fileName}`,
+            style: 'secaoAzul',
+            margin: [0, 2, 0, 6],
+            pageBreak: index > 0 ? 'before' : undefined,
+          },
+          linhaSecao('#0066cc')
+        );
 
         if (dataUrl) {
           content.push({
-            stack: [
-              {
-                text: `Imagem ${index + 1} - ${fileName}`,
-                style: 'labelCampo',
-                margin: [0, 4, 0, 6],
-              },
-              {
-                image: dataUrl,
-                fit: [500, 300],
-                alignment: 'center',
-                margin: [0, 0, 0, 16],
-              },
-            ],
-            unbreakable: true,
-            margin: [0, 0, 0, 8],
+            image: dataUrl,
+            fit: [500, 250],
+            alignment: 'center',
+            margin: [0, 0, 0, 14],
           });
         } else {
           content.push({
-            stack: [
-              {
-                text: `Imagem ${index + 1} - ${fileName}`,
-                style: 'labelCampo',
-                margin: [0, 4, 0, 6],
-              },
-              {
-                text: 'Imagem não recebida ou base64 inválido.',
-                style: 'textoObservacao',
-                margin: [0, 0, 0, 16],
-              },
-            ],
-            unbreakable: true,
-            margin: [0, 0, 0, 8],
+            text: 'Imagem não recebida ou base64 inválido.',
+            style: 'textoObservacao',
+            margin: [0, 0, 0, 14],
           });
         }
+
+        if (temAnaliseSeparada) {
+          content.push(
+            {
+              text: `ANÁLISE TÉCNICA DA IMAGEM ${numero}`,
+              style: 'secaoVerde',
+              margin: [0, 0, 0, 6],
+            },
+            linhaSecao('#168a3a'),
+            ...montarBlocosTexto(
+              analiseImagem ||
+                `A análise específica da imagem ${numero} não foi localizada no texto retornado pela IA. Ajuste o prompt do OpenRouter para responder com o título IMAGEM ${numero}.`
+            )
+          );
+        }
       });
+
+      if (!temAnaliseSeparada) {
+        content.push(
+          {
+            text: 'ANÁLISE TÉCNICA GERAL',
+            style: 'secaoVerde',
+            margin: [0, 12, 0, 6],
+            pageBreak: 'before',
+          },
+          linhaSecao('#168a3a'),
+          ...montarBlocosTexto(analiseTexto)
+        );
+      }
     } else {
-      content.push({
-        text: 'Nenhuma imagem foi recebida para anexar ao relatório.',
-        style: 'textoObservacao',
-        margin: [0, 0, 0, 18],
-      });
+      content.push(
+        {
+          text: 'Nenhuma imagem foi recebida para anexar ao relatório.',
+          style: 'textoObservacao',
+          margin: [0, 0, 0, 18],
+        },
+        {
+          text: 'ANÁLISE TÉCNICA',
+          style: 'secaoVerde',
+          margin: [0, 4, 0, 6],
+        },
+        linhaSecao('#168a3a'),
+        ...montarBlocosTexto(analiseTexto)
+      );
+    }
+
+    if (temAnaliseSeparada && consideracoesGerais) {
+      content.push(
+        {
+          text: 'CONSIDERAÇÕES GERAIS E RECOMENDAÇÕES',
+          style: 'secaoCinza',
+          margin: [0, 0, 0, 6],
+          pageBreak: 'before',
+        },
+        linhaSecao('#6b7280'),
+        ...montarBlocosTexto(consideracoesGerais)
+      );
     }
 
     content.push(
-      {
-        text: 'ANÁLISE TÉCNICA',
-        style: 'secaoVerde',
-        margin: [0, 4, 0, 6],
-      },
-      linhaSecao('#168a3a'),
-      ...montarBlocosTexto(analiseTexto),
       avisoImportante(
         'IMPORTANTE: Esta análise é preliminar e baseada nas imagens enviadas pelo usuário. A adoção de medidas deve ser validada por profissional habilitado e, quando aplicável, por inspeção no local.'
       )
@@ -826,12 +1026,7 @@ app.post('/gerar-analise-imagens-pdf', validarToken, async (req, res) => {
 
     const pdfBuffer = await gerarPdfBuffer(docBase(content, dataHora));
 
-    const fileName = `analise-imagens-${Date.now()}.pdf`;
-
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-
-    return res.send(pdfBuffer);
+    return enviarPdf(res, pdfBuffer, `analise-imagens-${Date.now()}.pdf`);
   } catch (error) {
     console.error('Erro ao gerar PDF da análise de imagens:', error);
 
@@ -842,9 +1037,6 @@ app.post('/gerar-analise-imagens-pdf', validarToken, async (req, res) => {
   }
 });
 
-/**
- * 404 precisa ficar depois de todas as rotas.
- */
 app.use((req, res) => {
   res.status(404).json({
     error: 'Rota não encontrada',
@@ -852,9 +1044,6 @@ app.use((req, res) => {
   });
 });
 
-/**
- * app.listen precisa ficar no final.
- */
 app.listen(PORT, () => {
   console.log(`IA Safety PDFMake API rodando na porta ${PORT}`);
 });
