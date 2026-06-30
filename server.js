@@ -766,24 +766,40 @@ app.post('/gerar-analise-imagens-pdf', validarToken, async (req, res) => {
         const fileName = limpar(img.fileName || img.filename || `imagem-${index + 1}.jpg`, `imagem-${index + 1}.jpg`);
         const dataUrl = base64ParaDataUrl(base64, mime);
 
-        content.push({
-          text: `Imagem ${index + 1} - ${fileName}`,
-          style: 'labelCampo',
-          margin: [0, 4, 0, 6],
-        });
-
         if (dataUrl) {
           content.push({
-            image: dataUrl,
-            fit: [500, 300],
-            alignment: 'center',
-            margin: [0, 0, 0, 16],
+            stack: [
+              {
+                text: `Imagem ${index + 1} - ${fileName}`,
+                style: 'labelCampo',
+                margin: [0, 4, 0, 6],
+              },
+              {
+                image: dataUrl,
+                fit: [500, 300],
+                alignment: 'center',
+                margin: [0, 0, 0, 16],
+              },
+            ],
+            unbreakable: true,
+            margin: [0, 0, 0, 8],
           });
         } else {
           content.push({
-            text: 'Imagem não recebida ou base64 inválido.',
-            style: 'textoObservacao',
-            margin: [0, 0, 0, 16],
+            stack: [
+              {
+                text: `Imagem ${index + 1} - ${fileName}`,
+                style: 'labelCampo',
+                margin: [0, 4, 0, 6],
+              },
+              {
+                text: 'Imagem não recebida ou base64 inválido.',
+                style: 'textoObservacao',
+                margin: [0, 0, 0, 16],
+              },
+            ],
+            unbreakable: true,
+            margin: [0, 0, 0, 8],
           });
         }
       });
